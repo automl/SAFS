@@ -7,8 +7,8 @@ SAFS  is written in Python3 and tested with Python 3.10.
 
 ## Installation
 
-- `git clone https://github.com/Mohammadloni/SAFS.git && cd SAFS`
-- `git branch -a && git checkout multi_gpu`
+- `git clone https://github.com/automl/SAFS.git && cd SAFS`
+- `cd safs`
 - `pip install -r requirements.txt`
 
 

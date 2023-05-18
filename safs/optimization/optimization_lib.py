@@ -1,36 +1,33 @@
-import torch
-import lahc
-import random
 import time
 import copy
+import lahc
+import torch
 import logging
+import random
 import torch.nn as nn
-import settings as settings
 import utility as utility
 import settings as settings
 import torch.optim as optim
 from simanneal import Annealer
 import training.train_lib as train_lib
 from pyeasyga.pyeasyga import GeneticAlgorithm
-
-
-logging = settings.LOGGING 
+import pruning.pruning_lib as pruning_lib
+import os
+utility.set_logging()
 
 class Optim_Operation(nn.Module):
 
-    def __init__(self, model=None, criterior=None, optimizer=None):
+    def __init__(self, state= None ):
         super(Optim_Operation, self).__init__()
-        self.model = model
-        self.criterior = criterior
-        self.optimizer = optimizer
+        self.state = state
         self.genome_size = None
         self.layer_number_optim = None
         self.candidate_activations = ['relu6','hardswish','swish',\
                                       'TanhSoft-1','acon', 'gelu',\
-                                      'srs', 'linear', 'relu', 'elu',\
-                                      'selu','tanh', 'hardtanh', 'softplus',\
-                                      'logsigmod']
-#,'hard_elish''elish', 'mish', 'ash''sigmoid''sin', 'cos'
+                                      'srs', 'elu',\
+                                      'tanh', 'softplus',\
+                                      'logsigmiod','symlog','symexp']
+        
 
     def search_nodes(self, search_agent=None, input_layer_size=None, layer_number_optim=None):
         self.genome_size = input_layer_size
@@ -70,11 +67,11 @@ class Optim_Operation(nn.Module):
         for i in range(self.genome_size):
             initial_state.append(random.choice(self.candidate_activations))
 
-        lahc.LateAcceptanceHillClimber.history_length = settings.LAHC_CONFIG['history_length']
-        lahc.LateAcceptanceHillClimber.updates_every = settings.LAHC_CONFIG['updates_every']
-        lahc.LateAcceptanceHillClimber.steps_minimum = settings.LAHC_CONFIG['steps_minimum']
+        lahc.LateAcceptanceHillClimber.history_length = self.state.LAHC_CONFIG['history_length']
+        lahc.LateAcceptanceHillClimber.updates_every = self.state.LAHC_CONFIG['updates_every']
+        lahc.LateAcceptanceHillClimber.steps_minimum = self.state.LAHC_CONFIG['steps_minimum']
         # initializing the problem
-        prob = LAHC_Search(initial_state, self.model, self.criterior, self.optimizer,
+        prob = LAHC_Search(initial_state, self.state,
                            self.candidate_activations, self.layer_number_optim)
         # and run the Late Acceptance Hill Climber for a solution
         prob.run()
@@ -85,11 +82,11 @@ class Optim_Operation(nn.Module):
         for i in range(self.genome_size):
             initial_state.append(random.choice(self.candidate_activations))
 
-        tsp = SA_Search(initial_state, self.model, self.criterior, self.optimizer, self.candidate_activations,
+        tsp = SA_Search(initial_state, self.state, self.candidate_activations,
                         self.layer_number_optim)
-        tsp.Tmax = settings.SA_CONFIG['Tmax']
-        tsp.Tmin = settings.SA_CONFIG['Tmin']
-        tsp.steps = settings.SA_CONFIG['steps']
+        tsp.Tmax = self.state.SA_CONFIG['Tmax']
+        tsp.Tmin = self.state.SA_CONFIG['Tmin']
+        tsp.steps = self.state.SA_CONFIG['steps']
         # tsp.set_schedule(tsp.auto(minutes=2))
         # since our state is just a list, slice is the fastest way to copy
         tsp.copy_strategy = "slice"
@@ -101,28 +98,26 @@ class Optim_Operation(nn.Module):
         for i in range(self.genome_size):
             initial_state.append(random.choice(self.candidate_activations))
 
-        rs = RS_Search(initial_state, self.model, self.criterior, self.optimizer, self.candidate_activations,
+        rs = RS_Search(initial_state, self.state, self.candidate_activations,
                        self.layer_number_optim)
         return rs.run()
 
     def GA(self):
         data = [None] * self.genome_size
-        _ga = GA_Search(data, self.model, self.criterior, self.optimizer, self.candidate_activations,
+        _ga = GA_Search(data, self.state, self.candidate_activations,
                         self.layer_number_optim)
         return _ga._run()
 
 
 class GA_Search():
 
-    def __init__(self, data, model, criterior, optimizer, candidate_activations, layer_number_optim):
-        self.criterior = criterior
-        self.model = model
-        self.optimizer = optimizer
+    def __init__(self, data, input_state, candidate_activations, layer_number_optim):
+        self.input_state = input_state
         self.layer_number_optim = layer_number_optim
         self.data = data
         self.candidate_activations = candidate_activations
 
-    def _run(self):
+    def _run(self):#TODO:
         ga = GeneticAlgorithm(self.data, settings.GA_CONFIG['population_size'], settings.GA_CONFIG['generations'],
                               settings.GA_CONFIG['crossover_probability'], settings.GA_CONFIG['mutation_probability'],
                               settings.GA_CONFIG['elitism'], settings.GA_CONFIG['maximise_fitness'])
@@ -143,39 +138,47 @@ class GA_Search():
         return temp
 
     def fitness(self, individual, data):
+        checkpoint_name = "prune%s.pth"%(self.input_state.MODEL_ARCHITECTURES[self.input_state.args.m])
+        self.input_state.Load_Checkpoint(checkpoint_name)
         counter = 0
-        settings.TRAINING_ENABLER = False
-        if settings.OPTIM_MODE == 0:
+
+        if self.input_state.args.optim_mode  == 0:
             self.model.optim_dictionary[self.layer_number_optim][2] = individual
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training(self.model, self.criterior, self.optimizer),
-                                                       self.criterior)
+
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
+
             self.fitness_value = test_acc
-        elif settings.OPTIM_MODE == 1:
+        elif self.input_state.args.optim_mode  == 1:
             for i in self.model.optim_dictionary:
                 self.model.optim_dictionary[i][2] = individual[counter]
                 counter += 1
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training(self.model, self.criterior, self.optimizer),
-                                                       self.criterior)
+
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
+
             self.fitness_value = test_acc
         else:
             for i in self.model.optim_dictionary:
                 self.model.optim_dictionary[i][2] = individual
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training(self.model, self.criterior, self.optimizer),
-                                                       self.criterior)
+
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
+
             self.fitness_value = test_acc
         return self.fitness_value
 
 
 class LAHC_Search(lahc.LateAcceptanceHillClimber):
 
-    def __init__(self, initial_state, model, criterior, optimizer, candidate_activations, layer_number_optim):
+    def __init__(self, initial_state, input_state, candidate_activations, layer_number_optim):
         super(LAHC_Search, self).__init__(initial_state=initial_state)
         self.fitness_value = 0
-        self.train_loader = settings.DATA_Train
-        self.test_loader = settings.DATA_Test
-        self.criterior = criterior
-        self.optimizer = optimizer
-        self.model = model
+
+        self.input_state = input_state
         self.layer_number_optim = layer_number_optim
         self.candidate_activations = candidate_activations
 
@@ -187,47 +190,47 @@ class LAHC_Search(lahc.LateAcceptanceHillClimber):
         self.state[a], self.state[b] = self.state[b], self.state[a]
 
     def energy(self):
-        logging = settings.LOGGING 
 
+        checkpoint_name = "prune%s.pth"%(self.input_state.MODEL_ARCHITECTURES[self.input_state.args.m])
+        self.input_state.Load_Checkpoint(checkpoint_name)
         counter = 0
-        self.train_loader = settings.DATA_Train
-        test_loader = settings.DATA_Test
-        settings.TRAINING_ENABLER = False
-        # load prune model weights
-        self.model, self.optimizer, _, _ = utility.Load_Checkpoint(self.model, self.optimizer,
-                                                                   'Model_prune' +
-                                                                   settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
 
-        self.optimizer = optim.SGD(self.model.parameters(), lr=settings.Optim_default['learning_rate'],
-                              momentum=settings.Optim_default['momentum'],
-                              weight_decay=settings.Optim_default['wd'])
-        utility.Set_Lr_Policy(settings.lr_scheduler_name, self.optimizer)
-       #TODO: define optimizer
-
-
-        if settings.OPTIM_MODE == 0:
+        if self.input_state.args.optim_mode == 0:
             self.model.optim_dictionary[self.layer_number_optim][2] = self.state
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training('No_Save', self.model, self.criterior, self.optimizer, self.train_loader),
-                                                       self.criterior, settings.DATA_Test)
-            logging.info(str(self.model.optim_dictionary))
-            logging.info("test_loss: %s ,  test_acc:%s " %(test_loss, test_acc))
+
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
+
             self.fitness_value = test_acc
-        elif settings.OPTIM_MODE == 1:
-            for i in self.model.optim_dictionary:
-                self.model.optim_dictionary[i][2][0] = self.state[counter]
+        elif self.input_state.args.optim_mode == 1:
+            for i in self.input_state.model.optim_dictionary:
+                self.input_state.model.optim_dictionary[i][2][0] = self.state[counter]
                 counter += 1
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training('No_Save', self.model, self.criterior, self.optimizer, self.train_loader),
-                                                       self.criterior, settings.DATA_Test)
-            logging.info(str(self.model.optim_dictionary)) #TODO:
-            logging.info("test_loss: %s ,  test_acc:%s " %(test_loss, test_acc))
+            #TODO:
+
+            file_list = os.listdir(self.input_state.CHECKPOINT_PATH)
+            for i in range(30):
+                mode = "search_%s"%(i)
+                if not( mode+'.pth' in file_list):
+                    break
+            test_acc = pruning_lib.training(self.input_state, mode)              
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
+            logging.info("")
+            with open("%ssearched_activations_%s.txt"%\
+                (self.input_state.CHECKPOINT_PATH,self.input_state.args.o), "a") as f:
+                f.write("%s acc:%s \n "%(self.state, test_acc))
+                f.close()
+
             self.fitness_value = test_acc
         else:
             for i in self.model.optim_dictionary:
                 self.model.optim_dictionary[i][2] = self.state
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training('No_Save', self.model, self.criterior, self.optimizer, self.train_loader),
-                                                       self.criterior, settings.DATA_Test)
-            logging.info(str(self.model.optim_dictionary)) 
-            logging.info("test_loss: %s ,  test_acc:%s " %(test_loss, test_acc))
+
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
             self.fitness_value = test_acc
 
         return 1/self.fitness_value
@@ -239,10 +242,8 @@ class LAHC_Search(lahc.LateAcceptanceHillClimber):
 
 class SA_Search(Annealer):
 
-    def __init__(self, state, model, criterior, optimizer, candidate_activations, layer_number_optim):
-        self.criterior = criterior
-        self.model = model
-        self.optimizer = optimizer
+    def __init__(self, state, input_state, candidate_activations, layer_number_optim):
+        self.input_state = input_state
         self.layer_number_optim = layer_number_optim
         self.candidate_activations = candidate_activations
         super(SA_Search, self).__init__(state)
@@ -255,40 +256,53 @@ class SA_Search(Annealer):
         self.state[a], self.state[b] = self.state[b], self.state[a]
 
     def energy(self):
+        checkpoint_name = "prune%s.pth"%(self.input_state.MODEL_ARCHITECTURES[self.input_state.args.m])
+        self.input_state.Load_Checkpoint(checkpoint_name)
         counter = 0
-        settings.TRAINING_ENABLER = False
-        if settings.OPTIM_MODE == 0:
-            self.model.optim_dictionary[self.layer_number_optim][2] = self.state
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training(self.model, self.criterior, self.optimizer),
-                                                       self.criterior)
+
+        if self.input_state.args.optim_mode  == 0:
+            self.input_state.model.optim_dictionary[self.layer_number_optim][2] = self.state
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')  
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
             self.fitness_value = test_acc
-        elif settings.OPTIM_MODE == 1:
-            for i in self.model.optim_dictionary:
-                self.model.optim_dictionary[i][2] = self.state[counter]
+
+        elif self.input_state.args.optim_mode  == 1:
+            for i in self.input_state.model.optim_dictionary:
+                self.input_state.model.optim_dictionary[i][2][0] = self.state[counter]
                 counter += 1
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training(self.model, self.criterior, self.optimizer),
-                                                       self.criterior)
+
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')  
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
+
+            with open("%ssearched_activations_%s.txt"%\
+                (self.input_state.CHECKPOINT_PATH,self.input_state.args.o), "a") as f:
+                f.write("%s acc:%s \n "%(self.state, test_acc))
+                f.close()
+
             self.fitness_value = test_acc
         else:
-            for i in self.model.optim_dictionary:
+            for i in self.input_state.model.optim_dictionary:
                 self.model.optim_dictionary[i][2] = self.state
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training(self.model, self.criterior, self.optimizer),
-                                                       self.criterior)
+
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')  
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
+
             self.fitness_value = test_acc
         return 1/self.fitness_value
 
 
 class RS_Search():
 
-    def __init__(self, initial_state, model, criterior, optimizer, candidate_activations, layer_number_optim):
-        self.criterior = criterior
-        self.model = model
+    def __init__(self, initial_state, input_state, candidate_activations, layer_number_optim):
+        self.input_state = input_state
         self.candidate_activations = candidate_activations
-        self.optimizer = optimizer
         self.layer_number_optim = layer_number_optim
-        self.iteration_search = settings.RS_CONFIG['iteration_search']
+        self.iteration_search = input_state.RS_CONFIG['iteration_search']
         self.prev_state = initial_state
-        self.best_state = []
+        self.best_state = initial_state
 
     def run(self):
         i = 0
@@ -312,33 +326,45 @@ class RS_Search():
         return state
 
     def fitness(self, state):
+        checkpoint_name = "prune%s.pth"%(self.input_state.MODEL_ARCHITECTURES[self.input_state.args.m])
+        self.input_state.Load_Checkpoint(checkpoint_name)
         counter = 0
-        settings.TRAINING_ENABLER = False
-        if settings.OPTIM_MODE == 0:
-            self.model.optim_dictionary[self.layer_number_optim][2] = state
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training(self.model, self.criterior, self.optimizer),
-                                                       self.criterior)
-        elif settings.OPTIM_MODE == 1:
-            for i in self.model.optim_dictionary:
-                self.model.optim_dictionary[i][2] = state[counter]
+
+        if self.input_state.args.optim_mode  == 0:
+            self.input_state.model.optim_dictionary[self.layer_number_optim][2] = state
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')  
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
+        elif self.input_state.args.optim_mode  == 1:
+            for i in self.input_state.model.optim_dictionary:
+                self.input_state.model.optim_dictionary[i][2][0] = state[counter]
                 counter += 1
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training(self.model, self.criterior, self.optimizer),
-                                                       self.criterior)
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')  
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
+
+            with open("%ssearched_activations_%s.txt"%\
+                (self.input_state.CHECKPOINT_PATH,self.input_state.args.o), "a") as f:
+                f.write("%s acc:%s \n "%(state, test_acc))
+                f.close()
+
         else:
-            for i in self.model.optim_dictionary:
-                self.model.optim_dictionary[i][2] = state
-            test_loss, test_acc = train_lib.Test_Model(train_lib.Training(self.model, self.criterior, self.optimizer),
-                                                       self.criterior)
+            for i in self.input_state.model.optim_dictionary:
+                self.input_state.model.optim_dictionary[i][2] = state
+            test_acc = pruning_lib.training(self.input_state, 'No_Save')  
+            logging.info(self.input_state.show_optim_dictionary()) #TODO:
+            logging.info("test_acc: %s " %test_acc)
         return test_acc
 
 
-def AF_Operation_Optimization(model, criterior, optimizer, train_loader):
+def AF_Operation_Optimization(state):
     start = time.time()
     activation_temp = None
-    optim_method = settings.OPTIM_METHODS[settings.OPTIM_METHOD]
-    optim_agent = Optim_Operation(model, criterior, optimizer)
+    model = state.model
+    optim_method = state.OPTIM_METHODS[state.args.o] 
+    optim_agent = Optim_Operation(state)
 
-    if settings.OPTIM_MODE == 0:
+    if state.args.optim_mode == 0:
         if optim_method == 'LAHC':
             for i in model.optim_dictionary:
                 activation_temp = optim_agent.search_nodes(optim_method,
@@ -364,7 +390,7 @@ def AF_Operation_Optimization(model, criterior, optimizer, train_loader):
                                                              layer_number_optim=i)
                 model.optim_dictionary[i][2] = activation_temp
 
-    elif (settings.OPTIM_MODE == 1):
+    elif (state.args.optim_mode == 1):
         counter = 0
         if optim_method == 'LAHC':
             activation_temp = optim_agent.search_layers(optim_method,
@@ -376,19 +402,19 @@ def AF_Operation_Optimization(model, criterior, optimizer, train_loader):
             activation_temp = optim_agent.search_layers(optim_method,
                                                         number_of_layers=len(model.optim_dictionary))
             for i in model.optim_dictionary:
-                model.optim_dictionary[i][2] = activation_temp[counter]
+                model.optim_dictionary[i][2][0] = activation_temp[counter]
                 counter += 1
         elif optim_method == 'GA':
             activation_temp = optim_agent.search_layers(optim_method,
                                                         number_of_layers=len(model.optim_dictionary))
             for i in model.optim_dictionary:
-                model.optim_dictionary[i][2] = activation_temp[counter]
+                model.optim_dictionary[i][2][0] = activation_temp[counter]
                 counter += 1
         elif optim_method == 'SA':
             activation_temp = optim_agent.search_layers(optim_method,
                                                         number_of_layers=len(model.optim_dictionary))
             for i in model.optim_dictionary:
-                model.optim_dictionary[i][2] = activation_temp[counter]
+                model.optim_dictionary[i][2][0] = activation_temp[counter]
                 counter += 1
 
     else:
@@ -409,4 +435,4 @@ def AF_Operation_Optimization(model, criterior, optimizer, train_loader):
     torch.save(model_temp, save_file)
     '''
 
-    return model
+    return state

@@ -1,4 +1,6 @@
+import os
 import torch
+import copy
 import logging
 import settings 
 import utility 
@@ -6,261 +8,181 @@ import torch.distributed as dist
 import torch.optim as optim
 import torch.multiprocessing as mp
 import training.train_lib as train_lib
-import optimization.hpo_lib as hpo_lib
+import optimization.smac_opt as smac_opt
 from optimization.optuna_lib import HPO_optuna
 import optimization.optimization_lib as AF_optim
 import optimization.cross_validation as cross_val
 from torch.nn.parallel import DistributedDataParallel as DDP
+utility.set_logging()
 
 
+def fixed_activation(state):
+    utility.Set_Seed(state.args)
+    train_dense_model(state)
+    test_loss, test_acc = train_lib.Test_Model(state)
+    logging.info("pruned model befor train_with_selected_activation: Test Accuracy=%s, Test Loss =%s"%(test_acc, test_loss))
+    train_with_selected_activation(state, "gelu")#TODO:
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-def optuna_runing(PR_ratio, model, args, criterior, optimizer, train_loader, test_loader):
-        utility.Set_Lr_Policy(settings.lr_scheduler_name, optimizer)
-        for name, param in model.named_parameters():
-            param.requires_grad = True
-            if 'alpha' in name or 'beta' in name or 'acon_pp' in name:
-                    param.requires_grad = False
-
-        if settings.First_train:
-            model = train_lib.Training('first_train', model, criterior, optimizer, train_loader)
-            test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-            logging.info('Original Model: Test Accuracy, Test Loss = %f , %f', test_acc, test_loss)
-
-            logging.info('-' * 20)
-        else :
-            model, optimizer, _, _ = utility.Load_Checkpoint(model, optimizer, 'Model_first_train' +
-                                                            settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
-            test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-            logging.info('Original Model: Test Accuracy, Test Loss = %f , %f', test_acc, test_loss)
-        utility.Prepare_Model_secound_method(model, PR_ratio, args, training_mode="Prune")  # TODO setting
-
-        checkpoint = utility.Create_Checkpoint(0, model.state_dict(), optimizer.state_dict(), test_acc, model.optim_dictionary, test_loss)
-        utility.Save_Checkpoint(checkpoint,
-                                'Model_prune' + settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
-        test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-        logging.info('prune fine: Test Accuracy, Test Loss = %f , %f', test_acc, test_loss)
-        settings.Model = model
-        HPO_optuna()
-
-def pruning_test_kfold (PR_ratio, model, args, criterior, optimizer, train_loader, test_loader):
-        utility.Set_Lr_Policy(settings.lr_scheduler_name, optimizer)
-        for name, param in model.named_parameters():
-            param.requires_grad = True
-            if 'alpha' in name or 'beta' in name or 'acon_pp' in name:
-                    param.requires_grad = False
-
-        if settings.First_train:
-            model = train_lib.Training('first_train', model, criterior, optimizer, train_loader)
-            test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-            logging.info('Original Model: Test Accuracy, Test Loss = %f , %f', test_acc, test_loss)
-
-            logging.info('-' * 20)
-        else :
-            model, optimizer, _, _ = utility.Load_Checkpoint(model, optimizer, 'Model_first_train' +
-                                                            settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
-            test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-            logging.info('Original Model: Test Accuracy, Test Loss = %f , %f', test_acc, test_loss)
-
-
-        utility.Prepare_Model_secound_method(model, PR_ratio, args, training_mode="Prune")  # TODO setting
-
-        checkpoint = utility.Create_Checkpoint(0, model.state_dict(), optimizer.state_dict(), test_acc, model.optim_dictionary, test_loss)
-        utility.Save_Checkpoint(checkpoint,
-                                'Model_prune' + settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
-
-        test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-        logging.info('prune fine: Test Accuracy, Test Loss = %f , %f', test_acc, test_loss)
-
-        train_with_selected_activation_kfold(model, settings.run_activation, \
-            settings.run_activation_ab_flag, train_loader, test_loader, criterior)
-
-        return model    
-
-
-def pruning_test (PR_ratio, model, args, criterior, optimizer, train_loader, test_loader):
-
-        if settings.First_train:
-            model = train_lib.Training('first_train', model, criterior, optimizer, train_loader)
-            test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-            logging.info('Original Model: Test Accuracy, Test Loss =', str(test_acc), str(test_loss))
-            logging.info('-' * 20)
-        else :
-            model, optimizer, _, _ = utility.Load_Checkpoint(model, optimizer, 'Model_first_train' +
-                                                            settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
-            test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-            logging.info('Original Model: Test Accuracy, Test Loss =', str(test_acc), str(test_loss))
-
-
-        utility.Prepare_Model_secound_method(model, PR_ratio, args, training_mode="Prune")  # TODO setting
-
-        checkpoint = utility.Create_Checkpoint(0, model.state_dict(), optimizer.state_dict(), test_acc, model.optim_dictionary, test_loss)
-        utility.Save_Checkpoint(checkpoint,
-                                'Model_prune' + settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
-
-        test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-        logging.info('prune fine: Test Accuracy, Test Loss =', test_acc, test_loss)
-
-        train_with_selected_activation(model, settings.run_activation, \
-            settings.run_activation_ab_flag, train_loader, test_loader, criterior)
-
-        return model
-
-
-def metafire (PR_ratio, model, args, criterior, optimizer, train_loader, test_loader):
-
-    utility.Set_Lr_Policy(settings.lr_scheduler_name, optimizer)
-
-    for name, param in model.named_parameters():
-        param.requires_grad = True
-        if 'alpha' in name or 'beta' in name or 'acon_pp' in name:
-                param.requires_grad = False
-
-    if settings.First_train:
-        model = train_lib.Training('first_train', model, criterior, optimizer, train_loader)
-        test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-        logging.info('Original Model: Test Accuracy, Test Loss = %f , %f', test_acc, test_loss)
-        logging.info('-' * 20)
-    else :
-        model, optimizer, _, _ = utility.Load_Checkpoint(model, optimizer, 'Model_first_train' +
-                                                        settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
-        test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-        logging.info('Original Model: Test Accuracy, Test Loss = %f , %f', test_acc, test_loss)
-
-    utility.Prepare_Model_secound_method(model, PR_ratio, args, training_mode="Prune")  # TODO setting
-    checkpoint = utility.Create_Checkpoint(0, model.state_dict(), optimizer.state_dict(), test_acc, model.optim_dictionary, test_loss)
-    utility.Save_Checkpoint(checkpoint,
-                            'Model_prune' + settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
-
-    if settings.Train_after_prune:
-        logging.info('Train_after_prune...')
-        optimizer = optim.SGD(model.parameters(), lr=settings.Optim_default['learning_rate'],
-                              momentum=settings.Optim_default['momentum'],
-                              weight_decay=settings.Optim_default['wd'])
-        utility.Set_Lr_Policy(settings.lr_scheduler_name, optimizer)
-        model = train_lib.Training('train_after_prune', model, criterior, optimizer, train_loader)
-        test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-        logging.info("Prune and retrain with relu: Test Accuracy:%s , Test Loss =%s" %(test_acc, test_loss))
+def train_with_selected_activation(state, activation_info):
+    args = state.args
+    if args.d != 2:
+        state.kfold_enabler = True
     else:
-        model, optimizer, _, _ = utility.Load_Checkpoint(model, optimizer, 'Model_train_after_prune' +
-                                                         settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
-        test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-        logging.info("Prune and retrain with relu: Test Accuracy:%s , Test Loss =%s" %(test_acc, test_loss))
+        state.kfold_enabler = False
+    activation = activation_info
 
+    checkpoint_name = "prune%s.pth"%(state.MODEL_ARCHITECTURES[args.m])
+    state.Load_Checkpoint(checkpoint_name)
 
-    model, optimizer, _, _ = utility.Load_Checkpoint(model, optimizer, 'Model_prune' +
-                                                     settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
+    for i,item in enumerate(state.model.optim_dictionary):
+        state.model.optim_dictionary[item][2][0] = activation
 
-    test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-    logging.info("ready to search-Prune with relu: Test Accuracy:%s , Test Loss =%s" %(test_acc, test_loss))
+    logging.info("train_with_selected_activation: %s" %state.model.optim_dictionary)
     logging.info('-' * 20)
 
-    ##################################     search AF      ##################################
-    for name, param in model.named_parameters():
-        param.requires_grad = True
-        if 'alpha' in name or 'beta' in name or 'acon_pp' in name:
-            param.requires_grad = False
+    state.requires_grad_enabler = False
+    utility.set_requires_grad(state)    
+    utility.Show_Gradients(state.model)
 
-    if settings.First_stage :
-        optimizer = optim.SGD(model.parameters(), lr=settings.Optim_default['learning_rate'],
-                              momentum=settings.Optim_default['momentum'],
-                              weight_decay=settings.Optim_default['wd'])
-        utility.Set_Lr_Policy(settings.lr_scheduler_name, optimizer)
-        
-        logging.info("First_stage : Searching AF")
-        settings.TRAINING_ENABLER = False
-        model = AF_optim.AF_Operation_Optimization(model, criterior, optimizer, train_loader)
-        settings.TRAINING_ENABLER = True
+    if state.kfold_enabler:
+        mode = "train_selected_activation_%s" % (activation)
+        cross_val.kfold_training(state, mode)
+    else:
+        mode = "train_selected_activation_%s" % (activation)
+        training(state, "No_Save")   
 
-        logging.info(str(model.optim_dictionary)) #TODO:
-        
-        logging.info("First_stage : Retrain_after_search")
-        optimizer = optim.SGD(model.parameters(), lr=settings.Optim_default['learning_rate'],
-                              momentum=settings.Optim_default['momentum'],
-                              weight_decay=settings.Optim_default['wd'])
-        utility.Set_Lr_Policy(settings.lr_scheduler_name, optimizer)    
-        model = train_lib.Training('Retrain_after_search', model, criterior, optimizer, train_loader)
-        test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
+    test_loss, test_acc = train_lib.Test_Model(state)
+    logging.info("model_with_%s: Test Accuracy=%s, Test Loss =%s"\
+                %(activation, test_acc, test_loss))
+
+def run_fig6(state):
+    utility.Set_Seed(state.args)
+    train_dense_model(state)
+    test_loss, test_acc = train_lib.Test_Model(state)
+    logging.info("pruned model: Test Accuracy=%s, Test Loss =%s"%(test_acc, test_loss))
+    second_stage(state)
+
+
+def metafire (state):
+    #utility.Set_Seed(state.args)
+    test_loss, test_acc = train_lib.Test_Model(state)
+
+    train_dense_model(state)
+    test_loss, test_acc = train_lib.Test_Model(state)
+    logging.info("pruned model: Test Accuracy=%s, Test Loss =%s"%(test_acc, test_loss))
+    first_stage(state)
+    second_stage(state)
+
+def first_stage(state):
+    utility.Set_Seed(state.args)
+    #grad_disable
+    state.requires_grad_enabler = False
+    utility.set_requires_grad(state)
+    args = state.args
+    state.kfold_enabler = 0
+    mode = "retrain_after_search_%s_PR_%s"%(state.MODEL_ARCHITECTURES[args.m],args.pruning_rate)
+    if args.first_stage :
+        logging.info("First_stage: Searching AF")
+        args.training_enabler = False
+        state = AF_optim.AF_Operation_Optimization(state)
+        args.training_enabler = True
+        logging.info("First_stage: output optim_dictionary:") 
+        logging.info(state.show_optim_dictionary()) 
+        logging.info("First_stage: Retrain_after_search")
+
+        if state.args.d != 2 and state.args.m!=1:
+            state.kfold_enabler = 1
+        state.grad_flow_enabler = True
+        activation =  ['symexp', 'relu6', 'hardswish', 'acon']
+        for i,item in enumerate(state.model.optim_dictionary):
+            state.model.optim_dictionary[item][2][0] = activation[i]
+        if state.kfold_enabler:
+            mode = 'aftersearch_ab'
+            cross_val.kfold_training(state, mode)
+        else:
+            training(state, mode) 
+            
+        state.grad_flow_enabler = False
+
+        test_loss, test_acc = train_lib.Test_Model(state)
         logging.info("Prune and Retrain_after_search: Test Accuracy:%s , Test Loss =%s" %(test_acc, test_loss))
-
-
-        # load prune weights
-        model, optimizer, _, _ = utility.Load_Checkpoint(model, optimizer,
-                                                                   'Model_prune' + settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
     else:
-        model, optimizer, _, _ = utility.Load_Checkpoint(model, optimizer,
-                                                 'Model_Retrain_after_search' + settings.MODEL_ARCHITECTURES[
-                                                    settings.MODEL_ARCHITECTURE] + '.pth')
-        model, optimizer, _, _ = utility.Load_Checkpoint(model, optimizer,
-                                                         'Model_prune' + settings.MODEL_ARCHITECTURES[
-                                                             settings.MODEL_ARCHITECTURE] + '.pth')
+        pass
+        # with open(state.CHECKPOINT_PATH+"K_Fold/best_%s.txt"%mode, "r") as f:
+        #     best_name = f.read()
+        # state.Load_Checkpoint("K_Fold/"+best_name) 
 
-    ############################## Fine Tune - Alpha and Beta ###############################
-    test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-    logging.info("Prune with searched AF model: Test Accuracy:%s , Test Loss =%s" %(test_acc, test_loss))
-    logging.info(str(model.optim_dictionary)) 
+    ch_name = "prune%s.pth"%(state.MODEL_ARCHITECTURES[state.args.m])
+    state.Load_Checkpoint(ch_name)
+    test_loss, test_acc = train_lib.Test_Model(state)
+    logging.info("model first stage: Test Accuracy=%s, Test Loss =%s  Activation Function:%s"\
+                %(test_acc, test_loss, state.show_optim_dictionary()))
+    utility.Show_Gradients(state.model)
+    print(state.model.optim_dictionary)
+    logging.info('-' * 30)
 
-    logging.info("Second stage: Activate alpha and beta")
-    for name, param in model.named_parameters():
-        param.requires_grad = True
-        if 'alpha' in name or 'beta' in name or 'acon_pp' in name:
-            param.requires_grad = True
+def Load_Checkpoint(state, checkpoint_name):
+    # Load the training model
 
-    logging.info("Second stage: retrain searched model with alpha and beta params")
-    optimizer = optim.SGD(model.parameters(), lr=settings.Optim_default['learning_rate'],
-                            momentum=settings.Optim_default['momentum'],
-                            weight_decay=settings.Optim_default['wd'])
+    if 'prune' in checkpoint_name: #TODO:
+        checkpoint = torch.load(state.CHECKPOINT_PATH + checkpoint_name)
+    elif 'first_train' in checkpoint_name:
+        checkpoint = torch.load(state.CHECKPOINT_dense_PATH + checkpoint_name)
+        for item in state.model.optim_dictionary.keys():
+            state.model.optim_dictionary[item][2][0] = checkpoint['optim_dictionary'][item][2][0]
+        state.kfold_indexes_dense =  checkpoint['kfold_indexes']
+    else :
+        checkpoint = torch.load(checkpoint_name,map_location="cpu")
+        for item in state.model.optim_dictionary.keys():
+            state.model.optim_dictionary[item][2][0] = checkpoint['optim_dictionary'][item][2][0]
+        
+    state.model.load_state_dict(checkpoint['model_state_dict'])
+    #state.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    state.epoch = checkpoint['epoch']
+    state.kfold_indexes =  checkpoint['kfold_indexes']
 
-    utility.Set_Lr_Policy(settings.lr_scheduler_name, optimizer)
-    model = train_lib.Training('Train_ab_after_search', model, criterior, optimizer, train_loader)
-
-
-    ##################################     HPO           ##################################
-    logging.info("Second stage: HPO")
-    model, optimizer, _, _ = utility.Load_Checkpoint(model, optimizer,
-                                                    'Model_prune' + settings.MODEL_ARCHITECTURES[
-                                                        settings.MODEL_ARCHITECTURE] + '.pth')
-    settings.Model = model
-    logging.info(str(model.optim_dictionary)) 
-    HPO_optuna()
-
-    return model
-
-def train_with_selected_activation(model, args, activation, a_b_flag, train_loader,test_loader, criterior):
-
-    model, _, _, _ = utility.Load_Checkpoint(model, settings.Optimizer,
-                                                     'Model_prune' + settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
- 
-    for i,item in enumerate(model.optim_dictionary):
-        model.optim_dictionary[item][2][0] = activation
-
-    logging.info("train_with_selected_activation"+str(model.optim_dictionary))
-    logging.info('-' * 20)
-
-    for name, param in model.named_parameters():
-        param.requires_grad = True
-        if 'alpha' in name or 'beta' in name or 'acon_pp' in name:
-            if a_b_flag:
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
+def second_stage(state):
+    utility.Set_Seed(state.args)
+    args = state.args
+    args.training_enabler = False
+    state.requires_grad_enabler = True
+    utility.set_requires_grad(state)
+    logging.info("Start Second Stage")
+    utility.Show_Gradients(state.model)
+    smac_opt.run_strategies.Run_Smac(state)
 
 
 
-    mode = "train_selected_activation_%s_%s" % (a_b_flag, activation)
-    mp.spawn(worker, nprocs=args.gpus, args=(args,model,mode))
-    
-    test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-    logging.info('prune fine tune search: Test Accuracy, Test Loss =', test_acc, test_loss)
-    return model
+        
+
+def training(state, mode):
+    #utility.Set_Seed(state.args)
+
+    ctx = mp.get_context('spawn')
+    p2c = ctx.SimpleQueue()
+
+    utility.set_requires_grad(state)
+    mp.spawn(worker, nprocs=state.args.gpus, args=(state, mode, p2c))
+    for _ in range(state.args.gpus):
+        dev , acc =p2c.get()
+    state.device_id = state.args.set_device
+    torch.cuda.set_device(state.device_id)
+    return acc 
 
 
-def worker(device_id, args):
-    model = args[1]
-    mode = args[2]
-    args = args[0]
-    
-    rank_id = args.nr * args.gpus + device_id
+def worker(device_id, state, mode, result_queue):
+    #utility.Set_Seed(state.args)
+
+    args = state.args
+    if args.gpus == 1:
+        rank_id = args.nr * args.gpus + device_id
+        device_id = args.set_device
+    else :
+        rank_id = args.nr * args.gpus + device_id
+    state.device_id = device_id
+    state.rank_id = rank_id
+
+        
     dist.init_process_group(
         backend='nccl',
         init_method='env://',
@@ -268,65 +190,84 @@ def worker(device_id, args):
         rank=rank_id
     )
     torch.cuda.set_device(device_id)
-    if settings.DATASET == 0:
-        train_loader, test_loader = utility.MNIST_Loaders(settings.BATCH_SIZE, settings.WORKERS)
+    
+    #  Use new kfold indexes for each fold training and use dense saved indexes for 1 fold training
+    if args.d != 2 and state.args.m!=1: #IMAGNET has train val and test subset and kfold is not enabled for it.
+        if state.kfold_enabler:
+            cross_val.setup_dataflow(state, state.kfold_indexes)
+        else:
+            cross_val.setup_dataflow(state, state.kfold_indexes_dense)
+    # prepare model, update_optimizer and criterior
+    state.model.to(device_id)
+    state.model = DDP(state.model, device_ids=[device_id],find_unused_parameters=True)
+    state.update_optimizer()
+    state.criterior = torch.nn.CrossEntropyLoss().to(device_id)
+    train_lib.Training(state, mode, result_queue)
+    cleanup()
+    
+def cleanup():
+    dist.destroy_process_group()
+
+
+def train_dense_model(state):
+    utility.Set_Seed(state.args)
+    args = state.args
+    if args.d==2 or state.args.m==1:
+        state.kfold_enabler = 0
     else:
-        all_dataset, train_loader, test_loader, final_test_loader =\
-             utility.CIFAR10_Loaders(args, rank_id, settings.BATCH_SIZE,\
-                 settings.WORKERS)
-    ##################### store global setting and variable #####################
-    settings.DATA_Test = test_loader
-    settings.DATA_Train = train_loader
-    settings.All_Dataset = all_dataset
-    settings.DATA_Final_Test = final_test_loader
+        state.kfold_enabler = 1 
+    state.requires_grad_enabler = False
+    utility.set_requires_grad(state)
+    mode = "first_train_%s"%(state.MODEL_ARCHITECTURES[args.m])
+    if  args.first_train:
+        if state.args.d != 2 and state.args.m!=1:
+            state.save_dataset()
+        if state.kfold_enabler:
+            cross_val.kfold_training(state, mode)
+        else:
+            training(state, mode)   
+        
+        test_loss, test_acc = train_lib.Test_Model(state)
+        logging.info("Dense Model: Test Accuracy=%s, Test Loss =%s"%(test_acc, test_loss))
+        logging.info('-' * 30)
+    else :
+        if state.args.d != 2 and state.args.m!=1:
+            state.load_dataset()
+        if state.kfold_enabler:
+            with open(state.CHECKPOINT_dense_PATH+"K_Fold/best_%s.txt"%mode, "r") as f:
+                check_name = f.read()
+                    
+                
+                state.Load_Checkpoint("K_Fold/"+check_name) 
+        else:
+            ch_name = "%s.pth"%(mode)
+            state.Load_Checkpoint(ch_name)  
 
-    optimizer = optim.SGD(model.parameters(), lr=settings.Optim_default['learning_rate'],
-                            momentum=settings.Optim_default['momentum'],
-                            weight_decay=settings.Optim_default['wd'])
-    utility.Set_Lr_Policy(settings.lr_scheduler_name, optimizer)
-
-    model = DDP(model, device_ids=[device_id])
-    model = train_lib.Training(model , mode, device_id, args, settings.Criterior,\
-         optimizer, train_loader)
-
-
-
-
-def train_with_selected_activation_kfold(model, activation, a_b_flag, train_loader,test_loader, criterior):
-
-    model, _, _, _ = utility.Load_Checkpoint(model, settings.Optimizer,
-                                                     'Model_prune' + settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] + '.pth')
- 
-    for i,item in enumerate(model.optim_dictionary):
-        model.optim_dictionary[item][2][0] = activation
-
-    # model.apply(init_weights)
-    logging.info("train_with_selected_activation"+str(model.optim_dictionary))
-    # prune fine tune
-    logging.info('-' * 20)
-    if settings.Finetune_a_b :
-        # settings.TRAIN_EPOCH = 30
-        for name, param in model.named_parameters():
-            param.requires_grad = True
-            if 'alpha' in name or 'beta' in name or 'acon_pp' in name:
-                if a_b_flag:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-
-
-
-        optimizer = optim.SGD(model.parameters(), lr=settings.Optim_default['learning_rate'],
-                              momentum=settings.Optim_default['momentum'],
-                              weight_decay=settings.Optim_default['wd'])
-        utility.Set_Lr_Policy(settings.lr_scheduler_name, optimizer)
-        model, _, _  = cross_val.Kfold_Training("train_selected_activation_"+str(a_b_flag)+"_"+activation, model, 3, criterior, optimizer)
-        test_loss, test_acc = train_lib.Test_Model(model, criterior, test_loader)
-        logging.info('prune fine tune search: Test Accuracy, Test Loss =', test_acc, test_loss)
-    return model 
-
-def init_weights(m):
-    if isinstance(m, torch.nn.Linear):
-        torch.nn.init.xavier_uniform(m.weight)
-        m.bias.data.fill_(0.01)
-
+    state.kfold_enabler = 0  
+     
+    if state.args.d != 2 and state.args.m!=1:
+        state.kfold_enabler = 1  
+        cross_val.setup_dataflow(state, state.kfold_indexes_dense)  
+      
+    test_loss, test_acc = train_lib.Test_Model(state)
+    logging.info("Dense Model: Test Accuracy=%s, Test Loss =%s"%(test_acc, test_loss))
+        
+    utility.Prepare_Model_secound_method(state)
+    
+    test_loss, test_acc = train_lib.Test_Model(state)
+    logging.info("pruned model: Test Accuracy=%s, Test Loss =%s"%(test_acc, test_loss))
+    #TODO: train after prune
+    if state.args.d != 2 and state.args.m!=1:
+        state.kfold_enabler = 1
+    mode = "Train_after_prune_%s_PR_%s"%(state.MODEL_ARCHITECTURES[args.m], args.pruning_rate)
+    if  args.Train_after_prune:  
+        state.grad_flow_enabler = True
+        if state.kfold_enabler:
+            cross_val.kfold_training(state, mode)
+        else:
+            training(state, mode)   
+        state.grad_flow_enabler = False
+  
+        test_loss, test_acc = train_lib.Test_Model(state)
+        logging.info("Train_after_prune: Test Accuracy=%s, Test Loss =%s"%(test_acc, test_loss))
+        logging.info('-' * 30)

@@ -7,6 +7,7 @@ import training.train_lib as train_lib
 from tmomentum.optimizers import TAdam
 from optimization.fromage import Fromage
 
+
 def objective(trial):
     model = settings.Model
     model, _, _, _ = utility.Load_Checkpoint(model, settings.Optimizer,
@@ -22,7 +23,9 @@ def objective(trial):
                                             ["Constant", "Cosine", "Step", "Linear", "ReduceLROnPlateau"])
         lr_scheduler_ = lr_scheduler
         momentum = trial.suggest_float("momentum", 0.1, 0.99)
+        # weight_decay = trial.suggest_float("weight_decay", 0, 100)
         settings.Optim_default['momentum'] = momentum
+        # settings.Optim_default['wd'] = weight_decay
         optimizer = optim.SGD(model.parameters(), lr=settings.Optim_default['learning_rate'],
                               momentum=settings.Optim_default['momentum'],
                               weight_decay=settings.Optim_default['wd'])
@@ -58,5 +61,6 @@ def  HPO_optuna():
     # study.optimize(objective, timeout=2.0)
     print(study.best_trial)
     logging.info("best_result: %s" %(study.best_trial))
+
 
 

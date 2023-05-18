@@ -1,0 +1,11 @@
+simanneal
+lahc
+pyeasyga
+scikit-optimize  
+optuna 
+tmomentum
+prettytable 
+torchsummary
+smac==1.4.0 
+timm==0.4.9
+lion_pytorch

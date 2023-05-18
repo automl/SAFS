@@ -1,16 +1,23 @@
-import settings as settings
-import models.dense_model_architecture as dense_model_arch
-import models.pruned_model_architecture as pruned_model_arch
-import model as model_
+import models 
 
-def Model_Architecture():
+def Model_Architecture(state):
 
-    if settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] == 'Lenet5':
-        model = dense_model_arch.LeNet5()
-    elif settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] == 'VGG-16':
-        model = model_.VGG('VGG16')
-    elif settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] == 'ResNet-18':
-        model = model_.resnet.ResNet18()
-    elif settings.MODEL_ARCHITECTURES[settings.MODEL_ARCHITECTURE] == "EfficientNet_B0":
-        model = model_.efficientnet_test.EfficientNetB0()
+    if state.MODEL_ARCHITECTURES[state.args.m] == 'Lenet5':
+        model = models.LeNet()
+    elif state.MODEL_ARCHITECTURES[state.args.m] == 'VGG-16' and state.args.d !=0:
+        model = models.VGG('VGG11',ch=3)
+    elif state.MODEL_ARCHITECTURES[state.args.m] == 'VGG-16' and state.args.d ==0:
+        model = models.VGG('VGG11',ch=1) 
+    elif state.MODEL_ARCHITECTURES[state.args.m] == 'ResNet-18':
+        num_classes = 10
+        if state.args.d == 2:
+            num_classes=1000
+        model = models.resnet.ResNet18(num_classes)
+    elif state.MODEL_ARCHITECTURES[state.args.m] == "EfficientNet_B0":
+        if state.args.d == 2:
+            model = models.efficientnet.EfficientNetB0(1000)
+        else:
+            model = models.efficientnet.EfficientNetB0(10)
+    elif state.MODEL_ARCHITECTURES[state.args.m] == "LocalVit":
+        model = models.localvit.create_model_localvit()#TODO:
     return model

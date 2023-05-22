@@ -4,10 +4,8 @@ def Model_Architecture(state):
 
     if state.MODEL_ARCHITECTURES[state.args.m] == 'Lenet5':
         model = models.LeNet()
-    elif state.MODEL_ARCHITECTURES[state.args.m] == 'VGG-16' and state.args.d !=0:
-        model = models.VGG('VGG11',ch=3)
-    elif state.MODEL_ARCHITECTURES[state.args.m] == 'VGG-16' and state.args.d ==0:
-        model = models.VGG('VGG11',ch=1) 
+    elif state.MODEL_ARCHITECTURES[state.args.m] == 'VGG-16':
+        model = models.VGG('VGG11')
     elif state.MODEL_ARCHITECTURES[state.args.m] == 'ResNet-18':
         num_classes = 10
         if state.args.d == 2:

@@ -57,9 +57,9 @@ parser.add_argument('--runing_mode', default="metafire", type=str,
                     choices=("fixed_activation","second_stage", "metafire"),
                     help='choose one of runing_mode in pruning_lib')
 ###################################   Train and Evauation   ###############################
-parser.add_argument('-d', type=int, default=0, choices=(0, 1, 2),
+parser.add_argument('-d', type=int, default=1, choices=(0, 1, 2),
                     help='datasets = {0:MNIST, 1:CIFAR10, 2:Imagenet16}. MNIST could only be trained on LeNet5')
-parser.add_argument('--train_epochs', default=50, type=int, metavar='N',
+parser.add_argument('--train_epochs', default=200, type=int, metavar='N',
                     help='number of epochs to train the model')
 parser.add_argument('--b', '--batch-size', default=256, type=int,
                     metavar='N', help='mini-batch size (default: 256)')
@@ -88,7 +88,7 @@ parser.add_argument('--m', '--model_arch', default=1, type=int, choices=(1, 2, 3
                     help='model architecture {1:Lenet5, 2:VGG-16, 3:ResNet-18, 4:EfficientNet_B0} (default: 0)')
 parser.add_argument('--optim_mode', default=1, type=int, choices=(0, 1, 2),
                     help='optimization mode {0:Node, 1:Layer, 2:Network}')
-parser.add_argument('--optim_epochs', default=50, type=int, metavar='N',
+parser.add_argument('--optim_epochs', default=80, type=int, metavar='N',
                     help='number of epochs to optimize AFs')
 parser.add_argument('--random_seed', default=42, type=int,
                     help='manual seed for random number generator')

@@ -163,7 +163,7 @@ class HPO_Model:
                 test_acc = cross_val.kfold_training(self.state, mode)
             else:
                 test_acc = pruning_lib.training(self.state, mode)  
-                     logging.info("")
+                logging.info("")
 
 
         return 1 - float(test_acc/100)

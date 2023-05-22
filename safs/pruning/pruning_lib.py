@@ -93,9 +93,6 @@ def first_stage(state):
         if state.args.d != 2 and state.args.m!=1:
             state.kfold_enabler = 1
         state.grad_flow_enabler = True
-        activation =  ['symexp', 'relu6', 'hardswish', 'acon']
-        for i,item in enumerate(state.model.optim_dictionary):
-            state.model.optim_dictionary[item][2][0] = activation[i]
         if state.kfold_enabler:
             mode = 'aftersearch_ab'
             cross_val.kfold_training(state, mode)
